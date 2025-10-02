@@ -20,6 +20,7 @@ import json
 import yaml
 import textwrap
 from dataclasses import dataclass, asdict
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 # Load .env for credentials (Azure/OpenAI)
@@ -30,9 +31,28 @@ except Exception:
     pass
 
 import streamlit as st
+import streamlit.components.v1 as components
 from pydantic import BaseModel, Field, validator
 import networkx as nx
 import pandas as pd
+
+from intent_generator_utils import (
+    GenerationResult,
+    INTENT_CONTRACT,
+    IntentSchema,
+    McpTool,
+    choose_candidate_tools,
+    compose_prompt,
+    diff_intent,
+    dry_run_intent,
+    ensure_directory,
+    generate_intent_schema,
+    git_commit,
+    load_intents,
+    load_tools,
+    pick_nearest_sample,
+    validate_intent_schema,
+)
 
 # Attempt to import the Mermaid component
 try:
@@ -486,7 +506,13 @@ with st.sidebar:
         except Exception as e:
             st.error(f"Import failed: {e}")
 
-mode = st.tabs(["📝 Natural language", "🧩 Node/Edge editor", "🧭 Mermaid editor", "▶️ Simulate"])
+mode = st.tabs([
+    "📝 Natural language",
+    "🧩 Node/Edge editor",
+    "🧭 Mermaid editor",
+    "🧠 Intent Schema Generator",
+    "▶️ Simulate",
+])
 
 # ---------------------------
 # Tab 1: Natural language → Mermaid
@@ -576,9 +602,304 @@ with mode[2]:
         st.graphviz_chart(_mermaid_as_graphviz_dot(mermaid_text))
 
 # ---------------------------
-# Tab 4: Simulate
+# Tab 4: Intent Schema Generator
 # ---------------------------
 with mode[3]:
+    st.subheader("🧠 Intent Schema Generator")
+    workflow_dict = st.session_state.wf.dict()
+    sample_objects: List[IntentSchema] = []
+    sample_labels: List[str] = []
+    tools: List[McpTool] = []
+    candidate_tools: List[McpTool] = []
+    system_prompt = ""
+    user_prompt = ""
+    manual_notes = ""
+
+    left, right = st.columns([1, 1], gap="large")
+
+    with left:
+        st.markdown("### 1. Source inputs")
+        samples_dir = Path("./sample jsons")
+        available_samples = sorted(str(p) for p in samples_dir.glob("*.json"))
+        default_sample_paths = st.session_state.get("intent_sample_paths", available_samples[:2])
+        default_sample_paths = [p for p in default_sample_paths if p in available_samples]
+        selected_sample_paths = st.multiselect(
+            "Sample intent JSONs",
+            options=available_samples,
+            default=default_sample_paths,
+            help="Select existing gold intents to ground the LLM output.",
+        )
+
+        sample_objects = []
+        sample_labels = []
+        if selected_sample_paths:
+            try:
+                loaded_samples = load_intents(selected_sample_paths)
+                sample_objects.extend(loaded_samples)
+                sample_labels.extend(selected_sample_paths)
+                st.session_state.intent_sample_paths = selected_sample_paths
+            except Exception as exc:
+                st.error(str(exc))
+
+        uploaded_samples = st.file_uploader(
+            "Upload additional sample intents",
+            type=["json"],
+            accept_multiple_files=True,
+            key="intent_sample_upload",
+        )
+        if uploaded_samples:
+            for uploaded in uploaded_samples:
+                try:
+                    payload = json.loads(uploaded.getvalue().decode("utf-8"))
+                    sample = IntentSchema(**payload)
+                    sample_objects.append(sample)
+                    sample_labels.append(f"uploaded:{uploaded.name}")
+                except Exception as exc:
+                    st.error(f"Failed to parse uploaded sample '{uploaded.name}': {exc}")
+
+        st.markdown("---")
+        st.markdown("### Tools catalog")
+        default_tools_path = st.session_state.get("intent_tools_path")
+        if not default_tools_path:
+            guess_tools_path = samples_dir / "tools.json"
+            default_tools_path = str(guess_tools_path) if guess_tools_path.exists() else ""
+        tools_path_input = st.text_input(
+            "Path to tools.json",
+            value=default_tools_path,
+            help="Load the MCP tool catalog used by the agent runtime.",
+            key="intent_tools_path_input",
+        )
+        tools_upload = st.file_uploader(
+            "Or upload tools.json",
+            type=["json"],
+            accept_multiple_files=False,
+            key="intent_tools_upload",
+        )
+
+        tools = []
+        tools_source = None
+        if tools_upload is not None:
+            try:
+                payload = json.loads(tools_upload.getvalue().decode("utf-8"))
+                if isinstance(payload, dict) and "tools" in payload:
+                    payload = payload["tools"]
+                if not isinstance(payload, list):
+                    raise ValueError("Expected a list of tool definitions.")
+                tools = [McpTool(**item) for item in payload]
+                tools_source = f"uploaded:{tools_upload.name}"
+                st.caption(f"Loaded {len(tools)} tools from upload {tools_upload.name}.")
+            except Exception as exc:
+                tools = []
+                st.error(f"Failed to load tools from upload: {exc}")
+        elif tools_path_input:
+            try:
+                tools = load_tools(tools_path_input)
+                tools_source = tools_path_input
+                st.session_state.intent_tools_path = tools_path_input
+                st.caption(f"Loaded {len(tools)} tools from `{tools_path_input}`.")
+            except Exception as exc:
+                tools = []
+                st.error(f"Failed to load tools: {exc}")
+        else:
+            st.info("Provide a tools.json catalog to enable schema validation.")
+
+        st.markdown("---")
+        st.markdown("### Workflow source")
+        use_current_graph = st.toggle(
+            "Use current Workflow DAG as input",
+            value=st.session_state.get("intent_use_graph", True),
+            key="intent_use_graph_toggle",
+        )
+        st.session_state.intent_use_graph = use_current_graph
+
+        manual_description = ""
+        if not use_current_graph:
+            manual_description = st.text_area(
+                "Describe workflow",
+                value=st.session_state.get("intent_manual_description", ""),
+                height=200,
+            )
+            st.session_state.intent_manual_description = manual_description
+        additional_notes = st.text_area(
+            "Additional notes for the LLM (optional)",
+            value=st.session_state.get("intent_additional_notes", ""),
+            height=140,
+        )
+        st.session_state.intent_additional_notes = additional_notes
+        manual_notes = "\n".join(part for part in [manual_description, additional_notes] if part).strip()
+
+        workflow_for_prompt = workflow_dict if use_current_graph else None
+        if tools:
+            candidate_tools = choose_candidate_tools(workflow_for_prompt, manual_notes, tools)
+        else:
+            candidate_tools = []
+
+        system_prompt, user_prompt = compose_prompt(
+            workflow_for_prompt,
+            manual_notes,
+            candidate_tools,
+            sample_objects,
+            INTENT_CONTRACT,
+        )
+
+        st.markdown("### 2. Prompt composer (preview)")
+        st.caption("Exact payload sent to the LLM. Read-only preview.")
+        prompt_preview = f"System message:\n{system_prompt}\n\nUser message:\n{user_prompt}"
+        st.code(prompt_preview, language="markdown")
+
+        st.markdown("### 3. Generate Intent Schema")
+        if not tools:
+            st.warning("Load a tools.json catalog to enable generation and validation.")
+        fallback_context = {
+            "workflow": workflow_for_prompt,
+            "manual_notes": manual_notes,
+            "tools_subset": candidate_tools,
+        }
+        if st.button(
+            "Generate Intent Schema",
+            type="primary",
+            use_container_width=True,
+            disabled=not tools,
+            key="intent_generate_btn",
+        ):
+            try:
+                result = generate_intent_schema(system_prompt, user_prompt, fallback_context)
+                st.session_state.generated_intent_schema = result.schema
+                st.session_state.generated_intent_raw = result.raw_response
+                st.session_state.generated_intent_source = result.source
+                st.session_state.generated_intent_error = result.error
+                st.session_state.generated_intent_validation = (
+                    validate_intent_schema(result.schema, tools) if tools else []
+                )
+                st.session_state.generated_intent_samples = [label for label in sample_labels]
+                st.session_state.generated_intent_manual_notes = manual_notes
+                st.session_state.generated_intent_last_tools = [tool.dict() for tool in tools]
+                st.session_state.last_intent_save_path = None
+                st.success(f"Generated schema via {result.source} backend.")
+                if result.error:
+                    st.info(result.error)
+            except Exception as exc:
+                st.error(f"Generation failed: {exc}")
+
+    with right:
+        st.markdown("### Validated JSON")
+        generated_schema = st.session_state.get("generated_intent_schema")
+        if generated_schema:
+            pretty_json = json.dumps(generated_schema, indent=2, ensure_ascii=False)
+            validation_messages = (
+                validate_intent_schema(generated_schema, tools) if tools else st.session_state.get("generated_intent_validation", [])
+            )
+            if validation_messages:
+                st.markdown("**Validation:** ❌ Issues found")
+                for msg in validation_messages:
+                    st.warning(msg)
+            else:
+                st.markdown("**Validation:** ✅ Passed")
+            st.json(generated_schema)
+            source = st.session_state.get("generated_intent_source", "unknown")
+            st.caption(f"Generated via: {source}")
+            if st.session_state.get("generated_intent_error"):
+                st.info(st.session_state["generated_intent_error"])
+
+            nearest_sample = (
+                pick_nearest_sample(generated_schema, sample_objects) if sample_objects else None
+            )
+            if nearest_sample:
+                label_map = {id(obj): label for label, obj in zip(sample_labels, sample_objects)}
+                nearest_label = label_map.get(id(nearest_sample), "sample")
+                diff_summary = diff_intent(generated_schema, nearest_sample)
+                st.markdown(f"### Diff vs. `{nearest_label}`")
+                col_gen, col_sample = st.columns(2)
+                with col_gen:
+                    st.caption("Generated intent")
+                    st.code(pretty_json, language="json")
+                with col_sample:
+                    st.caption(f"Sample intent ({nearest_label})")
+                    st.code(
+                        json.dumps(nearest_sample.dict(), indent=2, ensure_ascii=False),
+                        language="json",
+                    )
+                st.markdown("**Entity diff**")
+                st.json(diff_summary.get("entity_diff"))
+                st.markdown("**Task diff**")
+                st.json(diff_summary.get("task_diff"))
+                if diff_summary.get("text_diff"):
+                    st.markdown("**Unified diff**")
+                    st.code(diff_summary["text_diff"], language="diff")
+            else:
+                st.info("Select one or more sample intents to view a diff.")
+
+            st.markdown("### Export & Actions")
+            export_col1, export_col2, export_col3 = st.columns(3)
+            export_col1.download_button(
+                "⬇️ Export JSON",
+                data=pretty_json.encode("utf-8"),
+                file_name=f"{generated_schema.get('name', 'intent')}.json",
+                mime="application/json",
+                key="intent_download_btn",
+            )
+            if export_col2.button("📋 Copy to Clipboard", key="intent_copy_btn"):
+                components.html(
+                    f"""
+                    <script>
+                    const text = {json.dumps(pretty_json)};
+                    navigator.clipboard.writeText(text);
+                    </script>
+                    """,
+                    height=0,
+                )
+                st.toast("Copied intent JSON to clipboard")
+            if export_col3.button("💾 Save to ./intents", key="intent_save_btn"):
+                try:
+                    target_dir = ensure_directory("./intents")
+                    target_path = target_dir / f"{generated_schema.get('name', 'intent')}.json"
+                    target_path.write_text(pretty_json + "\n", encoding="utf-8")
+                    st.session_state.last_intent_save_path = str(target_path)
+                    st.success(f"Saved intent to {target_path}")
+                except Exception as exc:
+                    st.error(f"Failed to save intent: {exc}")
+
+            saved_path = st.session_state.get("last_intent_save_path")
+            commit_cols = st.columns([3, 1])
+            commit_message = commit_cols[0].text_input(
+                "Commit message",
+                value=f"Add intent {generated_schema.get('name', 'intent')}",
+                key="intent_commit_message",
+            )
+            if commit_cols[1].button(
+                "Create Git Commit",
+                key="intent_commit_btn",
+                disabled=not saved_path,
+            ):
+                if saved_path:
+                    success, output = git_commit([saved_path], commit_message)
+                    if success:
+                        st.success(f"Git commit created:\n{output}")
+                    else:
+                        st.error(f"Git commit failed: {output}")
+
+            dry_run_result = dry_run_intent(generated_schema, tools)
+            with st.expander("Dry-run analysis", expanded=False):
+                status = dry_run_result.get("status")
+                if status == "issues":
+                    st.error("Issues detected during dry-run.")
+                    for issue in dry_run_result.get("issues", []):
+                        st.write(f"- {issue}")
+                elif status == "ok":
+                    st.success("All required tool inputs are satisfiable.")
+                else:
+                    st.info("Dry-run unavailable; ensure a schema and tools catalog are loaded.")
+                st.json(dry_run_result.get("tasks", []))
+
+            with st.expander("Raw LLM response", expanded=False):
+                st.code(st.session_state.get("generated_intent_raw", ""), language="json")
+        else:
+            st.info("Generate an intent schema to view validation, diff, and export options.")
+
+# ---------------------------
+# Tab 4: Simulate
+# ---------------------------
+with mode[4]:
     st.subheader("Dry‑run the workflow")
     nodes = st.session_state.wf.as_nodes()
     edges = st.session_state.wf.as_edges()
