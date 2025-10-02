@@ -1,0 +1,266 @@
+[
+  {
+    "name": "query_account",
+    "description": "Query Siebel accounts by registered phone; returns matching account records.",
+    "args": [
+      {
+        "name": "registeredPhone",
+        "type": "string",
+        "required": true
+      }
+    ],
+    "execution": {
+      "type": "http_request",
+      "method": "POST",
+      "url": "{{ env['VOLTAS_BASE_URL'] or 'https://qavcare.voltasworld.com/siebel/v1.0' }}/service/VoltasRestAPI/QueryAccount",
+      "headers": {
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+      },
+      "query_params_template": {
+        "PageSize": "2",
+        "ViewMode": "All"
+      },
+      "payload_template": {
+        "body": {
+          "StartRowNum": "0",
+          "PageSize": "2",
+          "ViewMode": "All",
+          "SiebelMessage": {
+            "IntObjectFormat": "Siebel Hierarchical",
+            "IntObjectName": "UPBGAccountRestAPIIO",
+            "MessageType": "Integration Object",
+            "ListOfUPBGAccountRestAPIIO": {
+              "UPBGAccountRestAPIBC": {
+                "Registered Phone": "{{ registeredPhone }}"
+              }
+            }
+          }
+        }
+      },
+      "response_mapping": {
+        "accounts": "{{ data['SiebelMessage'] | tojson }}"
+      }
+    }
+  },
+  {
+    "name": "create_sr",
+    "description": "Create a new Siebel service request.",
+    "args": [
+      {
+        "name": "sr_type",
+        "type": "string",
+        "required": true,
+        "default": "Technical"
+      },
+      {
+        "name": "sr_sub_type",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "product_category",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "key_account_name",
+        "type": "string",
+        "required": true,
+        "default": "General"
+      },
+      {
+        "name": "account_id",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "personal_location_id",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "customer_comments",
+        "type": "string",
+        "required": true,
+        "default": "no comments"
+      },
+      {
+        "name": "sr_category",
+        "type": "string",
+        "required": true,
+        "default": "Warranty"
+      },
+      {
+        "name": "external_sr",
+        "type": "string",
+        "required": true,
+        "default": "IncrementThis5"
+      },
+      {
+        "name": "contact",
+        "type": "string",
+        "required": true,
+        "default": ""
+      },
+      {
+        "name": "contact_number",
+        "type": "string",
+        "required": true,
+        "default": ""
+      },
+      {
+        "name": "duplicate_reason",
+        "type": "string",
+        "required": true,
+        "default": "Multiple Unit"
+      },
+      {
+        "name": "severity",
+        "type": "string",
+        "required": true,
+        "default": "Normal"
+      },
+      {
+        "name": "purchase_date",
+        "type": "string",
+        "required": true,
+        "default": ""
+      },
+      {
+        "name": "selected_sr_routing_dealer_id",
+        "type": "string",
+        "required": false,
+        "default": ""
+      }
+    ],
+    "execution": {
+      "type": "http_request",
+      "method": "POST",
+      "url": "{{ env['VOLTAS_BASE_URL'] or 'https://qavcare.voltasworld.com/siebel/v1.0' }}/service/VoltasRestAPISRValidation/ValidateSR",
+      "headers": {
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+      },
+      "payload_template": {
+        "body": {
+          "SiebelMessage": {
+            "MessageId": "",
+            "MessageType": "Integration Object",
+            "IntObjectName": "UPBGSRValRestAPIIO",
+            "IntObjectFormat": "Siebel Hierarchical",
+            "ListOfUPBGSRValRestAPIIO": {
+              "UPBGSRValidateRestAPIBC": {
+                "Id": "0",
+                "SR Type": "{{ sr_type }}",
+                "SR Sub Type": "{{ sr_sub_type }}",
+                "UPBG Product Category": "{{ product_category }}",
+                "Key Account Name": "{{ key_account_name }}",
+                "Account Id": "{{ account_id }}",
+                "Personal Location Id": "{{ personal_location_id }}",
+                "Customer Comments": "{{ customer_comments }}",
+                "Selected SR Routing Dealer Id": "{{ selected_sr_routing_dealer_id if selected_sr_routing_dealer_id is not none else '' }}",
+                "SR Category": "{{ sr_category }}",
+                "External SR": "{{ external_sr }}",
+                "Contact": "{{ contact }}",
+                "Contact #": "{{ contact_number }}",
+                "DuplicateReason": "{{ duplicate_reason }}",
+                "Severity": "{{ severity }}",
+                "Purchase Date": "{{ purchase_date }}"
+              }
+            }
+          }
+        }
+      },
+      "response_mapping": {
+        "raw": "{{ data | tojson }}"
+      }
+    }
+  },
+  {
+    "name": "create_account",
+    "description": "Create a new Siebel account with address.",
+    "args": [
+      {
+        "name": "registeredPhone",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "accountName",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "accountType",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "subType",
+        "type": "string",
+        "required": true
+      },
+      {
+        "name": "email",
+        "type": "string",
+        "required": false,
+        "default": null
+      },
+      {
+        "name": "title",
+        "type": "string",
+        "required": false,
+        "default": null
+      },
+      {
+        "name": "address",
+        "type": "object",
+        "required": true
+      }
+    ],
+    "execution": {
+      "type": "http_request",
+      "method": "POST",
+      "url": "{{ env['VOLTAS_BASE_URL'] or 'https://qavcare.voltasworld.com/siebel/v1.0' }}/service/VoltasRestAPI/UPBGInsertAccount",
+      "headers": {
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+      },
+      "payload_template": {
+        "body": {
+          "StartRowNum": "0",
+          "SiebelMessage": {
+            "MessageId": "",
+            "MessageType": "Integration Object",
+            "IntObjectName": "UPBGAccountRestAPIIO",
+            "IntObjectFormat": "Siebel Hierarchical",
+            "ListOfUPBGAccountRestAPIIO": {
+              "UPBGAccountRestAPIBC": {
+                "Registered Phone": "{{ registeredPhone }}",
+                "Account Name": "{{ accountName }}",
+                "Account Type": "{{ accountType }}",
+                "Sub Type": "{{ subType }}",
+                "Email": "{{ email if email is not none else '' }}",
+                "Id": "0",
+                "Title": "{{ title if title is not none else '' }}",
+                "ListOfUpbgaddressrestapibc": {
+                  "UPBGAddressRestAPIBC": [
+                    {
+                      "Postal Code": "{{ address['postalCode'] }}",
+                      "Street Address": "{{ address['streetAddress'] }}",
+                      "Street Address 2": "{{ address.get('streetAddress2', '') }}"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "response_mapping": {
+        "raw": "{{ data | tojson }}"
+      }
+    }
+  }
+]

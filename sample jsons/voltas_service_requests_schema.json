@@ -1,0 +1,253 @@
+{
+  "name": "voltas_service_requests",
+  "summary": "This intent lets customers create/validate a Voltas Service Request (SR), or view the SRs they raised in the past. For SR creation, the user may describe an issue with their Voltas product(s) or directly ask for servicing of their Voltas product. First and foremost, it is imperative to get their registered phone number before any other detail. With the registered phone number, customer context is either resolved (i.e. with the phone number, their account_id and personal_location_id are retrieved) or created (using the intent 'voltas_accounts'). Then, we ask for the rest of the details that're required to file a service request, post-which the SR is handled in the backend. The SR number/ID must be returned to the user. Otherwise, if the user simply wants to view their SRs, their account is resolved using their registered phone number, and then their SRs are presented. If an account is to be created while filing an SR, all entities related to SR creation must be preserved and carried over to the 'voltas_accounts' intent, so that once the account is created, the SR can be filed without asking the user for any details again.",
+  "entities": [
+    {
+      "name": "list_SRs",
+      "type": "boolean",
+      "required": false,
+      "extract_rules": "**Set this to true ONLY IF the user explicitly asks about their previous SRs.**"
+    },
+    {
+      "name": "sr_type",
+      "type": "enum ('Technical','Non-Technical')",
+      "required": false,
+      "extract_rules": [
+        "Infer from context; default to 'Technical'."
+      ],
+      "validate": [
+        "If missing, set to 'Technical'."
+      ]
+    },
+    {
+      "name": "sr_sub_type",
+      "type": "enum ['Breakdown','Preventive Maintenance','Installation','Promo Installation','Demo','Stock Repairs','FLS','Reinstallation','Pre-Installation','Dismantling','PDI']",
+      "required": true,
+      "extract_rules": [
+        "Map user phrasing to the closest call type. Example Query - 'My fridge is not cooling'; sr_sub_type should be 'Breakdown'.",
+        "Accept synonyms (e.g., 'PM' → 'Preventive Maintenance', 'reinstall' → 'Reinstallation')."
+      ],
+      "validate": [
+        "Must be one of the allowed call types."
+      ]
+    },
+    {
+      "name": "product_category",
+      "type": "enum | string",
+      "required": true,
+      "extract_rules": [
+        "Capture product category by inferring/extracting from the user's message and matching them to one of the available product categories listed below.",
+        "Available product categories are: 'Air Conditioner', 'Air Cooler', 'Air Purifier', 'Commercial Refrigeration', 'Dishwasher', 'Dryer', 'Fan', 'Microwave Oven', 'Premium AC', 'Refrigerator', etc.",
+        "Map user phrasing to known categories exactly and the best you can."
+      ],
+      "validate": [
+        "Must be non-empty.",
+        "Value must be one of the known product categories listed above."
+      ]
+    },
+    {
+      "name": "sr_category",
+      "type": "enum ('Warranty','Installation','Demo','Chargeable','AMC') | string",
+      "required": false,
+      "extract_rules": [
+        "Capture SR category if present; otherwise default to 'Warranty'."
+      ]
+    },
+    {
+      "name": "account_id",
+      "type": "string",
+      "required": true,
+      "extract_rules": [
+        "**STRICTLY NEVER ask for this directly. This will always be retrieved via the registered phone number** using the `query_account` tool.",
+        "Likewise, if the user asks for 'account_id', politely inform them that they don't need to view or provide this, as it will automatically be fetched using their registered phone number. NEVER offer to display the account ID to the user.",
+        "If not given, ALWAYS resolve from the registered phone number via `query_account`.",
+        "If present in prior context, capture as-is.",
+        "Present in tool responses as 'Master Account Id'."
+      ]
+    },
+    {
+      "name": "registeredPhone",
+      "type": "string",
+      "required": true,
+      "extract_rules": [
+        "Capture Indian phone numbers in any common format: '+91-XXXXXXXXXX', '0XXXXXXXXXX', or 'XXXXXXXXXX'.",
+        "Normalize by removing spaces, dashes, country/leading zeros to canonical 10-digit form.",
+        "If multiple numbers are present, prefer the one near phrases like 'phone', 'mobile', or 'registered'.",
+        "**If registered phone number is not provided, ALWAYS, first and foremost, politely ask the user for a registered phone number which is associated with a Voltas account. Do not ask for any other entity until the registered phone number is provided and the account is resolved.**",
+        "If the user simply asked to see their previously raised SRs, do not not ask for anything apart from registeredPhone. Only the registeredPhone is required to view the history of SRs."
+      ],
+      "validate": [
+        {
+          "via": "tool",
+          "tool": "query_account",
+          "rules": [
+            "If account_id, personal_location_id, and contact_name not supplied, use phone to fetch candidate accounts. Ask the user to select the correct one if accounts exist in the 'UPBGAccountRestAPIBC' section, otherwise if there's no 'UPBGAccountRestAPIBC' section in the tool response, politely ask the user to create an account.",
+            "**That is, IF NO ACCOUNT IS FOUND (i.e. no 'UPBGAccountRestAPIBC' field in the tool response), THEN ALWAYS ask the user for their name, email ID and address, so that they can quickly create a new account and continue filing the SR.**",
+            "STRICTLY NEVER RUN THIS VALIDATION TOOL when creating a new account - in that case, invoke the 'voltas_accounts' intent to create a new account only.",
+            "Similarly, if the user provided a phone number which was validated earlier, DO NOT VALIDATE IT AGAIN - just use the previously validated phone number to resolve the account."
+          ],
+          "required_args": [
+            "registeredPhone"
+          ],
+          "outputs": "Look in the 'UPBGAccountRestAPIBC' section of the tool response to find 'account_id', 'personal_location_id', and 'contact_name'. If multiple accounts exist, include key fields - Account Name, Address, and last-4 of phone in 'clarification_prompt' - along with a request to confirm which account. If none exist/there's no 'UPBGAccountRestAPIBC' section in the tool response, inform the user that no accounts were found and ask the user for their name, email ID and address, so that an account can be created for them and they can file Service Requests."
+        }
+      ]
+    },
+    {
+      "name": "personal_location_id",
+      "type": "string",
+      "required": true,
+      "extract_rules": [
+        "**STRICTLY NEVER ask for this directly. This will always be retrieved via the registered phone number** using the `query_account` tool.",
+        "If present in prior context, capture as-is.",
+        "Present in tool responses as 'PrimaryAddressId' or 'UPBGAddressRestAPIBC['Id']."
+      ]
+    },
+    {
+      "name": "contact_name",
+      "type": "string",
+      "required": false,
+      "extract_rules": [
+        "**STRICTLY NEVER ask for this directly. This will always be retrieved via the registered phone number** using the `query_account` tool.",
+        "If present in prior context, capture as-is.",
+        "Present in tool responses as 'Account Name'."
+      ]
+    },
+    {
+      "name": "contact_phone",
+      "type": "string",
+      "required": false,
+      "extract_rules": [
+        "STRICTLY NEVER ASK FOR IT DIRECTLY - ALWAYS EXTRACT 'registeredPhone' and use that as 'contact_phone'."
+      ],
+      "validate": [
+        "Must be 10 digits after normalization."
+      ]
+    },
+    {
+      "name": "purchase_date",
+      "type": "date | relative",
+      "required": false,
+      "extract_rules": [
+        "**STRICTLY NEVER ASK FOR IT DIRECTLY. If the user provides it, capture it, else capture as empty string**.",
+        "Interpret relative mentions (e.g., 'last July 20') using {now}.",
+        "Parse in MM/DD/YYYY format only; if only month/year are given, ask for the exact date."
+      ],
+      "validate": [
+        "Date cannot be in the future relative to {now}."
+      ]
+    },
+    {
+      "name": "customer_comments",
+      "type": "string",
+      "required": false,
+      "extract_rules": [
+        "Capture a short freeform problem description or request, based on what the user says.",
+        "**STRICTLY NEVER ASK FOR IT DIRECTLY - either infer from user input or capture as empty string**."
+      ]
+    }
+  ],
+  "clarify": {
+    "rules": [
+      "STRICTLY NEVER ask for account_id, personal_location_id, and contact_name directly. These will always be retrieved via the registered phone number using the `query_account` tool.",
+      "**If registered phone number is not provided, ALWAYS, first and foremost ask for a registered phone number which is associated with a Voltas account. Do not ask for any other entity until the registered phone number is provided and the account is resolved.**",
+      "If account context is ambiguous, present 2–5 matches and ask the user to pick.",
+      "If user simply asked to view their previously-raised SRs (i.e. 'list_SRs' entity is set to true), only registeredPhone is required. In this case, STRICTLY do not ask for anything else."
+    ],
+    "ask_when_missing": [
+      "Registered Phone Number",
+      {
+        "create_sr": [
+          "SR Sub-Type (e.g., Installation, Breakdown, Preventive Maintenance)",
+          "Product Category (e.g. 'Premium AC', 'Refrigerator')"
+        ]
+      }
+    ],
+    "ui_hints": [
+      "If the user asked to view their SRs, do not talk about creating a new account/new SR. Simply show a very concise list of their previous SRs and summarise them for the user.",
+      "Ask the user for their registered phone in a friendly, polite and non-robotic way, and let them know that this is required to help in resolving the request.",
+      "Be reassuring to the user. Sometimes, let them know that Voltas is committed to quick and efficient service, and that their product will be serviced soon."
+    ],
+    "examples": [
+      {
+        "user": "Raise a breakdown SR for premium AC under warranty for Rahul at 9812345678. It's making noise since yesterday.",
+        "entities": {
+          "sr_type": "Technical",
+          "sr_sub_type": "Breakdown",
+          "product_category": "Premium AC",
+          "sr_category": "Warranty",
+          "registeredPhone": "9812345678",
+          "customer_comments": "AC making noise since yesterday"
+        }
+      },
+      {
+        "user": "Please schedule preventive maintenance for my AC, account 1-ABC123, next week.",
+        "entities": {
+          "sr_type": "Technical",
+          "sr_sub_type": "Preventive Maintenance",
+          "product_category": "AC",
+          "account_id": "1-ABC123",
+          "purchase_date": "",
+          "customer_comments": ""
+        }
+      }
+    ]
+  },
+  "task_graph": {
+    "nodes": [
+      {
+        "task_name": "resolve_account",
+        "description": "Resolve account by phone if account_id is missing; **retrieve the account_id and personal_location_id from the** 'UPBGAccountRestAPIBC' section of the tool response. If multiple accounts are found, present a numbered list for the user to choose from. If no accounts are found/there isn't a 'UPBGAccountRestAPIBC' section in the tool response, **ALWAYS switch to the 'account creation' task** - invoke the 'voltas_accounts' intent to create a new account. **That is, IF NO ACCOUNT IS FOUND, THEN ALWAYS ask the user for their name, email ID and address, so that they can quickly create a new account and continue filing the SR.**",
+        "type": "enrich",
+        "tool": "query_account",
+        "inputs": [
+          "registeredPhone",
+          "pageSize",
+          "viewMode"
+        ],
+        "outputs": {
+          "if account found": [
+            "account_id",
+            "personal_location_id"
+          ],
+          "if no account found": "invoke account creation via 'voltas_accounts' intent"
+        },
+        "condition": "account_id == null && registeredPhone != null",
+        "ui_hints": [
+          "Display account candidates (if any) as a concise list with: Name, Address (short), last-4 of phone.",
+          "If no accounts exist, prompt to create an account: request Name, Email, and Address, and indicate that this is required to proceed with SR.",
+          "Don't bother the user with account ID details after account has been resolved; if they were talking about creating a SR, ask them for the SR details/create the SR if they have already shared the details."
+        ]
+      },
+      {
+        "task_name": "create_sr",
+        "description": "Create/validate the service request in Voltas Siebel after the user's account has been resolved.",
+        "type": "final_task",
+        "tool": "create_sr",
+        "inputs": [
+          "sr_type",
+          "sr_sub_type",
+          "product_category",
+          "sr_category",
+          "account_id",
+          "personal_location_id",
+          "contact_name",
+          "contact_phone",
+          "purchase_date",
+          "customer_comments"
+        ],
+        "condition": "Account has been resolved (i.e. account_id and personal_location_id are present after account was looked up/created).",
+        "ui_hints": [
+          "Based on the API response, inform the user in human-friendly, non-robotic and layman language about the API response - whether the SR was created or not (if not, then what happened).",
+          "Assure the user that their issue will be resolved quickly and efficiently by Voltas.",
+          "Thank the user for choosing Voltas and wish them a great day, and ask them if they need help with anything else."
+        ]
+      }
+    ],
+    "guidelines": [
+      "STRICTLY NEVER ask for account_id or personal_location_id directly. These will always be retrieved via the registered phone number using the `query_account` tool.",
+      "Map user phrasing to valid SR sub-types, product categories. Make the process as easy for the user as possible.",
+      "STRICTLY NEVER TRY to submit an SR until the user's account has been resolved."
+    ]
+  }
+}

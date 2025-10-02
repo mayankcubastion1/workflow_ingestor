@@ -1,0 +1,198 @@
+{
+  "name": "voltas_accounts",
+  "summary": "Create a new customer account in Voltas Siebel. If a phone number is given and it was previously detected that there's no account, straightaway start creating an account instead of validating again. Otherwise, use the provided registered phone number to check for existing accounts to avoid duplicates. If there're no user accounts (i.e. no 'UPBGAccountRestAPIBC' section in the 'query_account' API/tool response), then move on to creating the account for the user by asking required details such as email, customer name, address, etc. Also, if the user is trying to create an SR but their account isn't found, politely ask them for their email ID, name, address, etc. so that their account is created and they can continue with filing the SR. Preserve the details they've already provided to create a SR while creating the account. Once the account is created, confirm the account creation and then proceed to create the SR.",
+  "entities": [
+    {
+      "name": "registeredPhone",
+      "type": "string",
+      "required": true,
+      "extract_rules": [
+        "Capture Indian phone numbers in any common format: '+91-XXXXXXXXXX', '0XXXXXXXXXX', or 'XXXXXXXXXX'.",
+        "Normalize by removing spaces, dashes, country/leading zeros to canonical 10-digit form.",
+        "If multiple numbers are present, prefer the one near phrases like 'phone', 'mobile', or 'registered'."
+      ],
+      "validate": [
+        {
+          "via": "tool",
+          "tool": "query_account",
+          "rules": [
+            "IF duplicate_account_exists is false/the phone number is already validated, DO NOT RUN this tool again for the same 'registeredPhone'.",
+            "IF THE USER DIDN'T ASK TO CREATE A NEW ACCOUNT, ALWAYS inform the user if any account with this 'registeredPhone' exists or not in 'clarification_prompt'. Do not ask about account creation.",
+            "ONLY IF THE USER IS ASKING TO CREATE A NEW ACCOUNT WITH 'registeredPhone', use this tool to check for existing accounts with this phone to avoid duplicate accounts. If one or more exist, ALWAYS present matches and ask the user to pick or confirm creating a new account in 'clarification_prompt'."
+          ],
+          "required_args": [
+            "registeredPhone"
+          ],
+          "outputs": "Siebel Accounts matching the phone number, if any (**focus on the 'UPBGAccountRestAPIBC' object - if absent, there're no accounts**). If accounts exist, include key fields like Account Name, Account Type, Address, and last-4 of phone in 'clarification_prompt'. If none exist, confirm that no accounts were found."
+        },
+        "Must be 10 digits after normalization; otherwise ask for a valid mobile number.",
+        "Using 'clarification_prompt', ALWAYS inform the user if any account with the provided 'registeredPhone' exists or not. If one or more exist, ALWAYS present matches.",
+        "STRICTLY REMEMBER, YOU MUST AVOID DUPLICATE ACCOUNTS USING THIS TOOL. DO NOT SKIP THIS VALIDATION IF THE USER ASKS TO CREATE A NEW ACCOUNT WITH 'registeredPhone'. IF DUPLICATES EXIST, ALWAYS PRESENT THE ACCOUNT DETAILS AND ASK THE USER TO PICK OR CONFIRM CREATING A NEW ACCOUNT IN 'clarification_prompt'."
+      ]
+    },
+    {
+      "name": "duplicate_account_exists",
+      "type": "boolean",
+      "required": true,
+      "extract_rules": [
+        "Set true STRICTLY IF the 'query_account' tool found one or more existing accounts with the given 'registeredPhone'.",
+        "Else, set false."
+      ]
+    },
+    {
+      "name": "accountName",
+      "type": "string",
+      "required": true,
+      "extract_rules": [
+        "Capture the customer name (person or organization).",
+        "Trim honorifics like Mr/Ms/Dr. Preserve accents and hyphens."
+      ],
+      "validate": [
+        "Must be non-empty."
+      ]
+    },
+    {
+      "name": "accountType",
+      "type": "enum('Individual','Organization')",
+      "required": true,
+      "extract_rules": [
+        "STRICTLY NEVER ASK FOR THIS DIRECTLY - infer from phrasing: single person = 'Individual'; company/business terms = 'Organization'.",
+        "**ALWAYS DEFAULT to 'Individual' if not explicitly specified.**"
+      ]
+    },
+    {
+      "name": "subType",
+      "type": "string",
+      "required": true,
+      "extract_rules": [
+        "Capture sub-type/classification only if specified (e.g., 'General', 'Retail', 'Corporate').",
+        "**ALWAYS DEFAULT to 'General' if not explicitly specified.**"
+      ]
+    },
+    {
+      "name": "email",
+      "type": "string",
+      "required": true,
+      "extract_rules": [
+        "Capture the first email-like token."
+      ],
+      "validate": [
+        "If present, must match standard email pattern user@domain."
+      ]
+    },
+    {
+      "name": "title",
+      "type": "enum",
+      "required": false,
+      "extract_rules": [
+        "Capture titles/honorifics near the name if present. Available values: 'Mr','Ms','Mrs','Dr'.",
+        "ALWAYS pick only from the provided available values.",
+        "If not present, leave empty."
+      ]
+    },
+    {
+      "name": "address",
+      "type": "object",
+      "required": true,
+      "fields": [
+        {
+          "name": "postalCode",
+          "type": "string",
+          "required": false,
+          "extract_rules": [
+            "Capture 5–6 digit PIN/postal code if stated."
+          ]
+        },
+        {
+          "name": "streetAddress",
+          "type": "string",
+          "required": false,
+          "extract_rules": [
+            "Capture street/house/area lines as a single string."
+          ]
+        },
+        {
+          "name": "streetAddress2",
+          "type": "string",
+          "required": false,
+          "extract_rules": [
+            "Capture apartment/landmark/additional address lines if present."
+          ]
+        }
+      ]
+    }
+  ],
+  "clarify": {
+    "rules": [
+      "Ask only for the missing required fields WHEN 'create_account' is in 'required_tasks'.",
+      "If multiple existing accounts are found, present a short numbered list with name and last-4 of phone, and city, then ask the user to choose or confirm creating a new one."
+    ],
+    "ask_when_missing": [
+      {
+        "required_tasks": [
+          "create_account"
+        ],
+        "entities": [
+          "registered phone number",
+          "customer's name",
+          "address with pincode",
+          "email ID"
+        ]
+      }
+    ],
+    "ui_hints": [
+      "Ask the user for their registered phone in a friendly, polite and non-robotic way, and let them know that this is required to proceed with creating an account on their behalf.",
+      "If no accounts are found (no 'UPBGAccountRestAPIBC'), prompt for details to create an account: Name, Email, Address (Street + Postal Code).",
+      "On any validation/tool error, surface the message inline above the relevant field and keep inputs intact for correction."
+    ],
+    "examples": [
+      {
+        "user": "Create an account for Rahul Mehta, 9812345678 in Mumbai, email rahulm@example.com",
+        "entities": {
+          "registeredPhone": "9812345678",
+          "accountName": "Rahul Mehta",
+          "accountType": "Individual",
+          "email": "rahulm@example.com",
+          "address": {
+            "streetAddress": "Mumbai",
+            "postalCode": ""
+          }
+        }
+      },
+      {
+        "user": "Make a new customer: ACME Industries, contact 022-67890123",
+        "entities": {
+          "registeredPhone": "67890123",
+          "accountName": "ACME Industries",
+          "accountType": "Organization"
+        }
+      }
+    ]
+  },
+  "task_graph": {
+    "nodes": [
+      {
+        "task_name": "create_account",
+        "description": "Create a new account in Voltas Siebel if user doesn't already have one.",
+        "type": "final_task",
+        "tool": "create_account",
+        "inputs": [
+          "registeredPhone",
+          "accountName",
+          "accountType",
+          "subType",
+          "address"
+        ],
+        "condition": "No duplicate accounts existing in response of 'query_account'.",
+        "ui_hints": [
+          "After account creation succeeds, display the new Account ID prominently with a short note on next steps (based on previous context in the conversation).",
+          "If the tool returns an error, show the error inline on the confirmation card and allow the user to revise inputs and retry."
+        ]
+      }
+    ],
+    "guidelines": [
+      "If any tool returns an error, surface the message and ask the user to correct inputs.",
+      "Do not lose the user-entered data in case an error occurs."
+    ]
+  }
+}
