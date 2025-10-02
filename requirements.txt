@@ -1,2 +1,10 @@
-pip install -U streamlit pydantic pyyaml networkx graphviz streamlit-mermaid openai python-dotenv
-streamlit run streamlit_workflow_builder_azure.py
+streamlit
+pydantic
+PyYAML
+networkx
+pandas
+graphviz
+streamlit-mermaid
+openai
+python-dotenv
+pytest
